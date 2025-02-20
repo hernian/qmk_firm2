@@ -24,3 +24,6 @@ void epd_display(const uint8_t* image);
 void epd_display_base(const uint8_t* image);
 void epd_display_partial(const uint8_t* image);
 void epd_sleep(void);
+
+void epd_display_image_async(const uint8_t* image);
+void epd_task(void);

@@ -1,4 +1,6 @@
 #include QMK_KEYBOARD_H
+#include <print.h>
+#include "ch.h"
 #include "epd.h"
 
 
@@ -640,31 +642,79 @@ void init_my_bitmap(void)
     }
 }
 
-void keyboard_pre_init_kb(void)
+
+uint g_epd_stat = 0;
+
+
+
+void keyboard_post_init_kb(void)
 {
-    uint i;
-
+    debug_enable = true;
+    debug_matrix = true;
+    dprint("[keyboard_post_init_kb]enter");
     init_my_bitmap();
-
     epd_init();
     epd_clear();
     epd_sleep();
-    wait_ms(1000);
+    keyboard_post_init_user();
+    dprint("[keyboard_post_init_kb]leave");
+}
 
-    for (i = 0; i < 100; i++)
+void EPD_Task(void)
+{
+    uint16_t tim_start;
+    uint16_t tim_elapsed;
+
+    switch (g_epd_stat)
     {
+      case 0:
+        g_epd_stat = 1;
+        tim_start = timer_read();
         epd_init_fast();
-        epd_clean_screen();
-        epd_display_partial(Image128x296);
+        epd_display(Image128x296);
+        tim_elapsed = timer_elapsed(tim_start);
+        dprintf("[process_record_kb] stat:0, tim: %u", tim_elapsed);
+        epd_read_busy();
         epd_sleep();
-        wait_ms(3000);
+        break;
+      case 1:
+        g_epd_stat = 0;
+        tim_start = timer_read();
+        epd_init_fast();
+        epd_display(g_myBitmap);
+        tim_elapsed = timer_elapsed(tim_start);
+        dprintf("[process_record_kb] stat:1, tim: %u", tim_elapsed);
+        epd_read_busy();
+        epd_sleep();
+        break;
+    }
+}
 
-        epd_init_fast();
-        epd_clean_screen();
-        epd_display_partial(g_myBitmap);
-        epd_sleep();
-        wait_ms(3000);
+void housekeeping_task_kb(void)
+{
+    epd_task();
+    housekeeping_task_user();
+}
+
+static int g_image_state = 0;
+
+bool process_record_kb(uint16_t keycode, keyrecord_t *record)
+{
+    if (record->event.pressed){
+        if (g_image_state != 0){
+            dprint("show Image128x296");
+            epd_display_image_async(Image128x296);
+            g_image_state = 0;
+        }
+        else{
+            dprint("show g_myBitmap");
+            epd_display_image_async(g_myBitmap);
+            g_image_state = 1;
+        }
     }
 
-    keyboard_pre_init_user();
+    return process_record_user(keycode, record);
 }
+
+
+

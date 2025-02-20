@@ -2,8 +2,15 @@
 // /296x128, 2.9inch E-Ink display module driver
 #include "gpio.h"
 #include "wait.h"
+#include "timer.h"
+#include "debug.h"
 #include "epd.h"
 
+#define USE_HARDWARE_SPI
+
+#if defined (USE_HARDWARE_SPI)
+#include "spi_master.h"
+#endif
 
 static const uint8_t WS_20_30[159] =
 {
@@ -74,28 +81,70 @@ static const uint8_t WF_PARTIAL_2IN9[159] =
 0x22,0x17,0x41,0xB0,0x32,0x36,
 };
 
+const uint EPD_SPI_DIVISOR = 125 / 20;
+
 static void epd_gpio_config(void)
 {
+#if defined(USE_HARDWARE_SPI)
+    spi_init();
+    spi_start(EPD_CS_PIN, false, 0, 6);
+#else
+    gpio_set_pin_output(EPD_SCK_PIN);
+    gpio_set_pin_output(EPD_MOSI_PIN);
+#endif
+    gpio_set_pin_output(EPD_CS_PIN);
     gpio_set_pin_input(EPD_BUSY_PIN);
     gpio_set_pin_output(EPD_RST_PIN);
     gpio_set_pin_output(EPD_DC_PIN);
-    gpio_set_pin_output(EPD_CS_PIN);
-    gpio_set_pin_output(EPD_SCK_PIN);
-    gpio_set_pin_output(EPD_MOSI_PIN);
-
-    gpio_write_pin_high(EPD_RST_PIN);
-    gpio_write_pin_high(EPD_CS_PIN);
 }
 
-static void epd_reset(void)
+#if defined(USE_HARDWARE_SPI)
+
+static void epd_send_command(uint8_t cmd)
 {
-    gpio_write_pin_high(EPD_RST_PIN);
-    wait_ms(10);
-    gpio_write_pin_low(EPD_RST_PIN);
-    wait_ms(2);
-    gpio_write_pin_high(EPD_RST_PIN);
-    wait_ms(10);
+    gpio_write_pin_low(EPD_DC_PIN);
+//    gpio_write_pin_low(EPD_CS_PIN);
+
+    spi_transmit(&cmd, 1);
+
+//    gpio_write_pin_high(EPD_CS_PIN);
 }
+
+static void epd_send_data(uint8_t data)
+{
+    gpio_write_pin_high(EPD_DC_PIN);
+//    gpio_write_pin_low(EPD_CS_PIN);
+
+    spi_transmit(&data, 1);
+
+//    gpio_write_pin_high(EPD_CS_PIN);
+}
+
+static void epd_send_data_block(const uint8_t* block, size_t len)
+{
+    gpio_write_pin_high(EPD_DC_PIN);
+//    gpio_write_pin_low(EPD_CS_PIN);
+
+    spi_transmit(block, len);
+
+//    gpio_write_pin_high(EPD_CS_PIN);
+}
+
+static void epd_send_data_repeatedly(const uint8_t data, size_t count)
+{
+    uint i;
+
+    gpio_write_pin_high(EPD_DC_PIN);
+//    gpio_write_pin_low(EPD_CS_PIN);
+
+    for (i = 0; i < count; i++){
+        spi_transmit(&data, 1);
+    }
+
+//    gpio_write_pin_high(EPD_CS_PIN);
+}
+
+#else
 
 static void epd_send_command(uint8_t cmd)
 {
@@ -209,6 +258,17 @@ static void epd_send_data_repeatedly(const uint8_t data, size_t count)
         }
         gpio_write_pin_high(EPD_CS_PIN);
     }
+}
+#endif
+
+static void epd_reset(void)
+{
+    gpio_write_pin_high(EPD_RST_PIN);
+    wait_ms(10);
+    gpio_write_pin_low(EPD_RST_PIN);
+    wait_ms(2);
+    gpio_write_pin_high(EPD_RST_PIN);
+    wait_ms(10);
 }
 
 static void epd_set_windows(uint x_start, uint y_start, uint x_end, uint y_end)
@@ -329,7 +389,7 @@ void epd_turn_on_display(void)
     epd_send_command(0x22); // Display Update Control
     epd_send_data(0xC7);
     epd_send_command(0x20); // Activate Display Update Sequence
-    epd_read_busy();
+//    epd_read_busy();
 }
 
 void epd_turn_on_display_partial(void)
@@ -426,3 +486,103 @@ void epd_sleep(void)
     wait_ms(100);
 }
 
+
+static const uint8_t* g_image = NULL;
+static int g_state = 0;
+static uint g_time_mark;
+static uint g_time_delay;
+
+static void epd_delay_async(uint delay)
+{
+    g_time_delay = delay;
+    g_time_mark = timer_read();
+}
+
+static bool epd_delay_wait(void)
+{
+    return timer_elapsed(g_time_mark) >= g_time_delay;
+}
+
+bool epd_busy_wait(void)
+{
+    return !gpio_read_pin(EPD_BUSY_PIN);
+}
+
+static void epd_set_image(const uint8_t* image)
+{
+    epd_send_command(0x24);
+    epd_send_data_block(image, COUNT_IMAGE_BYTES);
+}
+
+static void epd_turn_on_display_async(void)
+{
+    epd_send_command(0x22); // Display Update Control
+    epd_send_data(0xC7);
+    epd_send_command(0x20); // Activate Display Update Sequence
+}
+
+static bool epd_turn_on_display_wait(void)
+{
+    return epd_busy_wait();
+}
+
+static void epd_sleep_async(void)
+{
+    epd_send_command(0x10); // enter deep sleep
+    epd_send_data(0x01);
+    epd_delay_async(100);
+}
+
+static bool epd_sleep_wait(void)
+{
+    return epd_delay_wait();
+}
+
+void epd_display_image_async(const uint8_t* image)
+{
+    g_image = image;
+}
+
+void epd_task(void)
+{
+    switch (g_state) {
+        case 0:
+            if (g_image == NULL){
+                break;
+            }
+            dprint("[epd_task] changing image start\n");
+            epd_init_fast();
+            g_state++;
+            break;
+        case 1:
+            dprint("[epd_task] changing image #1\n");
+            epd_set_image(g_image);
+            g_image = NULL;
+            g_state++;
+            break;
+        case 2:
+            dprint("[epd_task] changing image #2\n");
+            epd_turn_on_display_async();
+            g_state++;
+            break;
+        case 3:
+            if (!epd_turn_on_display_wait()){
+                break;
+            }
+            dprint("[epd_task] changing image #3\n");
+            g_state++;
+            break;
+        case 4:
+            dprint("[epd_task] changing image #4\n");
+            epd_sleep_async();
+            g_state++;
+            break;
+        case 5:
+            if (!epd_sleep_wait()){
+                break;
+            }
+            dprint("[epd_task] changing image end\n");
+            g_state = 0;
+            break;
+    }
+}
