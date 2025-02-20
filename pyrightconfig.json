@@ -1,0 +1,4 @@
+{
+	"exclude": [".git","drivers","keyboards_org","layouts","lib","platform","quantum","tests","users","util"]
+}
+
