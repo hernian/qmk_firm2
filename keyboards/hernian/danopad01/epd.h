@@ -2,12 +2,6 @@
 
 #include <stdint.h>
 
-#define EPD_BUSY_PIN    GP20
-#define EPD_MOSI_PIN    GP19
-#define EPD_SCK_PIN     GP18
-#define EPD_CS_PIN      GP10
-#define EPD_DC_PIN      GP26
-#define EPD_RST_PIN     GP27
 
 #define EPD_WIDTH   128
 #define EPD_HEIGHT  296
@@ -25,5 +19,6 @@ void epd_display_base(const uint8_t* image);
 void epd_display_partial(const uint8_t* image);
 void epd_sleep(void);
 
-void epd_display_image_async(const uint8_t* image);
+void epd_init_req(void);
+void epd_display_image_req(const uint8_t* image);
 void epd_task(void);

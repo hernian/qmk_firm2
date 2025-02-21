@@ -1,16 +1,16 @@
 // Waveshare 12956
 // /296x128, 2.9inch E-Ink display module driver
-#include "gpio.h"
-#include "wait.h"
-#include "timer.h"
-#include "debug.h"
+#include QMK_KEYBOARD_H
+#include "spi_master.h"
 #include "epd.h"
 
-#define USE_HARDWARE_SPI
+#define EPD_BUSY_PIN    GP10
+#define EPD_MOSI_PIN    SPI_MOSI_PIN
+#define EPD_SCK_PIN     SPI_SCK_PIN
+#define EPD_CS_PIN      GP20
+#define EPD_DC_PIN      GP26
+#define EPD_RST_PIN     GP27
 
-#if defined (USE_HARDWARE_SPI)
-#include "spi_master.h"
-#endif
 
 static const uint8_t WS_20_30[159] =
 {
@@ -81,185 +81,62 @@ static const uint8_t WF_PARTIAL_2IN9[159] =
 0x22,0x17,0x41,0xB0,0x32,0x36,
 };
 
-const uint EPD_SPI_DIVISOR = 125 / 20;
 
 static void epd_gpio_config(void)
 {
-#if defined(USE_HARDWARE_SPI)
+    // RP2040 CUP Clock: 125MHz, Waveshare e-paper SPI Clock: 20MHz
+    // const uint EPD_SPI_DIVISOR = 125 / 20;
     spi_init();
     spi_start(EPD_CS_PIN, false, 0, 6);
-#else
-    gpio_set_pin_output(EPD_SCK_PIN);
-    gpio_set_pin_output(EPD_MOSI_PIN);
-#endif
-    gpio_set_pin_output(EPD_CS_PIN);
     gpio_set_pin_input(EPD_BUSY_PIN);
     gpio_set_pin_output(EPD_RST_PIN);
     gpio_set_pin_output(EPD_DC_PIN);
 }
 
-#if defined(USE_HARDWARE_SPI)
 
 static void epd_send_command(uint8_t cmd)
 {
     gpio_write_pin_low(EPD_DC_PIN);
-//    gpio_write_pin_low(EPD_CS_PIN);
-
     spi_transmit(&cmd, 1);
-
-//    gpio_write_pin_high(EPD_CS_PIN);
 }
 
 static void epd_send_data(uint8_t data)
 {
     gpio_write_pin_high(EPD_DC_PIN);
-//    gpio_write_pin_low(EPD_CS_PIN);
-
     spi_transmit(&data, 1);
-
-//    gpio_write_pin_high(EPD_CS_PIN);
 }
 
 static void epd_send_data_block(const uint8_t* block, size_t len)
 {
     gpio_write_pin_high(EPD_DC_PIN);
-//    gpio_write_pin_low(EPD_CS_PIN);
-
     spi_transmit(block, len);
-
-//    gpio_write_pin_high(EPD_CS_PIN);
 }
 
 static void epd_send_data_repeatedly(const uint8_t data, size_t count)
 {
+#if 0
+    const uint SIZE_TEMP_BUFF = 16;
+    uint count_temp_repeat = count / SIZE_TEMP_BUFF;
+    uint count_temp_remain = count % SIZE_TEMP_BUFF;
     uint i;
+    uint8_t temp[SIZE_TEMP_BUFF];
+
+    memset(temp, data, SIZE_TEMP_BUFF);
 
     gpio_write_pin_high(EPD_DC_PIN);
-//    gpio_write_pin_low(EPD_CS_PIN);
-
+    for (i = 0; i < count_temp_repeat; i++){
+        spi_transmit(temp, SIZE_TEMP_BUFF);
+    }
+    if (count_temp_remain > 0){
+        spi_transmit(temp, count_temp_remain);
+    }
+#endif
+    uint i;
+    gpio_write_pin_high(EPD_DC_PIN);
     for (i = 0; i < count; i++){
         spi_transmit(&data, 1);
     }
-
-//    gpio_write_pin_high(EPD_CS_PIN);
 }
-
-#else
-
-static void epd_send_command(uint8_t cmd)
-{
-    uint i;
-
-    gpio_write_pin_low(EPD_DC_PIN);
-    gpio_write_pin_low(EPD_CS_PIN);
-    // Software SPI
-    for (i = 0; i < 8; i++)
-    {
-        // Software SPI
-        if ((cmd & 0x80) != 0)
-        {
-            gpio_write_pin_high(EPD_MOSI_PIN);
-        }
-        else
-        {
-            gpio_write_pin_low(EPD_MOSI_PIN);
-        }
-        cmd <<= 1;
-        gpio_write_pin_high(EPD_SCK_PIN);
-        gpio_write_pin_low(EPD_SCK_PIN);
-    }
-    gpio_write_pin_high(EPD_CS_PIN);
-}
-
-static void epd_send_data(uint8_t data)
-{
-    uint i;
-    gpio_write_pin_high(EPD_DC_PIN);
-    gpio_write_pin_low(EPD_CS_PIN);
-    // Software SPI
-    for (i = 0; i < 8; i++)
-    {
-        // Software SPI
-        if ((data & 0x80) != 0)
-        {
-            gpio_write_pin_high(EPD_MOSI_PIN);
-        }
-        else
-        {
-            gpio_write_pin_low(EPD_MOSI_PIN);
-        }
-        data <<= 1;
-        gpio_write_pin_high(EPD_SCK_PIN);
-        gpio_write_pin_low(EPD_SCK_PIN);
-    }
-    gpio_write_pin_high(EPD_CS_PIN);
-}
-
-
-static void epd_send_data_block(const uint8_t* block, size_t len)
-{
-    uint i;
-    uint j;
-    uint8_t data;
-
-    gpio_write_pin_high(EPD_DC_PIN);
-
-    for (i = 0; i < len; i++)
-    {
-        gpio_write_pin_low(EPD_CS_PIN);
-        // Software SPI
-        data = block[i];
-        for (j = 0; j < 8; j++)
-        {
-            // Software SPI
-            if ((data & 0x80) != 0)
-            {
-                gpio_write_pin_high(EPD_MOSI_PIN);
-            }
-            else
-            {
-                gpio_write_pin_low(EPD_MOSI_PIN);
-            }
-            data <<= 1;
-            gpio_write_pin_high(EPD_SCK_PIN);
-            gpio_write_pin_low(EPD_SCK_PIN);
-        }
-        gpio_write_pin_high(EPD_CS_PIN);
-    }
-}
-
-static void epd_send_data_repeatedly(const uint8_t data, size_t count)
-{
-    uint i;
-    uint j;
-    uint8_t temp;
-
-    gpio_write_pin_high(EPD_DC_PIN);
-
-    for (i = 0; i < count; i++)
-    {
-        gpio_write_pin_low(EPD_CS_PIN);
-        // Software SPI
-        temp = data;
-        for (j = 0; j < 8; j++)
-        {
-            // Software SPI
-            if ((temp & 0x80) != 0)
-            {
-                gpio_write_pin_high(EPD_MOSI_PIN);
-            }
-            else
-            {
-                gpio_write_pin_low(EPD_MOSI_PIN);
-            }
-            temp <<= 1;
-            gpio_write_pin_high(EPD_SCK_PIN);
-            gpio_write_pin_low(EPD_SCK_PIN);
-        }
-        gpio_write_pin_high(EPD_CS_PIN);
-    }
-}
-#endif
 
 static void epd_reset(void)
 {
@@ -492,6 +369,18 @@ static int g_state = 0;
 static uint g_time_mark;
 static uint g_time_delay;
 
+
+static bool epd_every_sec(uint32_t* tim_pre)
+{
+    uint32_t tim_cur = timer_read();
+
+    if (tim_cur - *tim_pre < 1000){
+        return false;
+    }
+    *tim_pre = tim_cur;
+    return true;
+}
+
 static void epd_delay_async(uint delay)
 {
     g_time_delay = delay;
@@ -506,6 +395,74 @@ static bool epd_delay_wait(void)
 bool epd_busy_wait(void)
 {
     return !gpio_read_pin(EPD_BUSY_PIN);
+}
+
+void epd_init_req(void)
+{
+    g_state = 100;
+}
+
+void epd_init_1_async(void)
+{
+    dprint("[epd_init_1_async]start\n");
+    epd_gpio_config();
+    epd_reset();
+    epd_delay_async(100);
+}
+
+bool epd_init_1_wait(void)
+{
+    return epd_delay_wait();
+}
+
+bool epd_init_2_wait(void)
+{
+    static uint32_t tim_pre;
+    uint busy = gpio_read_pin(EPD_BUSY_PIN);
+    if (epd_every_sec(&tim_pre)){
+        dprintf("[epd_init_2_wait]busy %u\n", busy);
+    }
+    return !busy;
+}
+
+void epd_init_3_async(void)
+{
+    dprint("[epd_init_3_async]start\n");
+    epd_send_command(0x12); // soft reset
+}
+
+bool epd_init_3_wait(void)
+{
+    static uint32_t tim_pre;
+    uint busy = gpio_read_pin(EPD_BUSY_PIN);
+    if (epd_every_sec(&tim_pre)){
+        dprintf("[epd_init_3_wait]busy %u\n", busy);
+    }
+    return !busy;
+}
+
+void epd_init_4(void)
+{
+    dprint("[epd_init_4]start\n");
+    epd_send_command(0x01); // driver output control
+    epd_send_data(0x27);
+    epd_send_data(0x01);
+    epd_send_data(0x00);
+
+    epd_send_command(0x11); // data entry mode
+    epd_send_data(0x03);
+
+    epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
+
+    epd_send_command(0x21); // display update control
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+
+    epd_set_cursor(0, 0);
+
+    epd_lut_by_host(WS_20_30);
+
+    dprint("[epd_init_4]end\n");
 }
 
 static void epd_set_image(const uint8_t* image)
@@ -538,10 +495,11 @@ static bool epd_sleep_wait(void)
     return epd_delay_wait();
 }
 
-void epd_display_image_async(const uint8_t* image)
+void epd_display_image_req(const uint8_t* image)
 {
     g_image = image;
 }
+
 
 void epd_task(void)
 {
@@ -582,6 +540,34 @@ void epd_task(void)
                 break;
             }
             dprint("[epd_task] changing image end\n");
+            g_state = 0;
+            break;
+        case 100:
+            dprint("[epd_task] 100\n");
+            epd_init_1_async();
+            g_state++;
+            break;
+        case 101:
+            if (!epd_init_1_wait()){
+                break;
+            }
+            dprint("[epd_task] 101\n");
+            g_state++;
+        case 102:
+            // epd_init_2_async()は無い
+            if (!epd_init_2_wait()){
+                break;
+            }
+            dprint("[epd_task] 102\n");
+            epd_init_3_async();
+            g_state++;
+            break;
+        case 103:
+            if (!epd_init_3_wait()){
+                break;
+            }
+            dprint("[epd_task] 103\n");
+            epd_init_4();
             g_state = 0;
             break;
     }

@@ -643,7 +643,9 @@ void init_my_bitmap(void)
 }
 
 
-uint g_epd_stat = 0;
+//uint g_epd_stat = 0;
+static int g_image_state = 0;
+static bool g_init_flag = false;
 
 
 
@@ -653,41 +655,13 @@ void keyboard_post_init_kb(void)
     debug_matrix = true;
     dprint("[keyboard_post_init_kb]enter");
     init_my_bitmap();
+#if 0
     epd_init();
     epd_clear();
     epd_sleep();
+#endif
     keyboard_post_init_user();
     dprint("[keyboard_post_init_kb]leave");
-}
-
-void EPD_Task(void)
-{
-    uint16_t tim_start;
-    uint16_t tim_elapsed;
-
-    switch (g_epd_stat)
-    {
-      case 0:
-        g_epd_stat = 1;
-        tim_start = timer_read();
-        epd_init_fast();
-        epd_display(Image128x296);
-        tim_elapsed = timer_elapsed(tim_start);
-        dprintf("[process_record_kb] stat:0, tim: %u", tim_elapsed);
-        epd_read_busy();
-        epd_sleep();
-        break;
-      case 1:
-        g_epd_stat = 0;
-        tim_start = timer_read();
-        epd_init_fast();
-        epd_display(g_myBitmap);
-        tim_elapsed = timer_elapsed(tim_start);
-        dprintf("[process_record_kb] stat:1, tim: %u", tim_elapsed);
-        epd_read_busy();
-        epd_sleep();
-        break;
-    }
 }
 
 void housekeeping_task_kb(void)
@@ -696,20 +670,27 @@ void housekeeping_task_kb(void)
     housekeeping_task_user();
 }
 
-static int g_image_state = 0;
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record)
 {
+    (void)Image128x296;
     if (record->event.pressed){
-        if (g_image_state != 0){
-            dprint("show Image128x296");
-            epd_display_image_async(Image128x296);
-            g_image_state = 0;
-        }
-        else{
-            dprint("show g_myBitmap");
-            epd_display_image_async(g_myBitmap);
-            g_image_state = 1;
+        dprintf("key down: %04X\n", keycode);
+        if (keycode == 0x14){
+            if (g_init_flag == false){
+                g_init_flag = true;
+                epd_init_req();
+            }
+            else if (g_image_state != 0){
+                dprint("show Image128x296\n");
+                epd_display_image_req(Image128x296);
+                g_image_state = 0;
+            }
+            else{
+                dprint("show g_myBitmap\n");
+                epd_display_image_req(g_myBitmap);
+                g_image_state = 1;
+            }
         }
     }
 
