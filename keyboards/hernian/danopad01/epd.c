@@ -85,7 +85,6 @@ static const uint8_t WF_PARTIAL_2IN9[159] =
 };
 
 
-static const uint8_t* g_lut;
 static const uint8_t* g_image;
 
 
@@ -167,6 +166,22 @@ static void epd_set_cursor(uint x_start, uint y_start)
     epd_send_data((uint8_t)(y_start >> 8));
 }
 
+static void epd_set_lut_by_host(const uint8_t* lut)
+{
+    epd_send_command(0x32);
+    epd_send_data_block(lut, 153);
+    epd_send_command(0x3f);
+    epd_send_data(lut[153]);
+    epd_send_command(0x03);
+    epd_send_data(lut[154]);
+    epd_send_command(0x04);
+    epd_send_data(lut[155]);
+    epd_send_data(lut[156]);
+    epd_send_data(lut[157]);
+    epd_send_command(0x2c);
+    epd_send_data(lut[158]);
+}
+
 ///////////////////////////////////////////////////////////////
 // Control Sequencer Engine
 
@@ -243,14 +258,6 @@ static void cseq_start(const cseq_elem_t* seq)
 static uint32_t    tim_wait_start;
 static uint32_t    ms_wait;
 
-static bool seqelem_wait_timer_elapsed(void)
-{
-    if (timer_elapsed32(tim_wait_start) < ms_wait){
-        return false;
-    }
-    return true;
-}
-
 static bool seqelem_wait_until_idle(void)
 {
     if (gpio_read_pin(EPD_BUSY_PIN)){
@@ -259,10 +266,18 @@ static bool seqelem_wait_until_idle(void)
     return true;
 }
 
-static bool seqelem_wait_init(void)
+static bool seqelem_wait_init_1of2(void)
 {
     tim_wait_start = timer_read32();
     ms_wait = 1000;
+    return true;
+}
+
+static bool seqelem_wait_init_2of2(void)
+{
+    if (timer_elapsed32(tim_wait_start) < ms_wait){
+        return false;
+    }
     return true;
 }
 
@@ -346,37 +361,19 @@ static bool seqelem_init_fast(void)
 
 static bool seqelem_set_lut_20_30(void)
 {
-    g_lut = WS_20_30;
+    epd_set_lut_by_host(WS_20_30);
     return true;
 }
 
 static bool seqelem_set_lut_full(void)
 {
-    g_lut = WF_FULL;
+    epd_set_lut_by_host(WF_FULL);
     return true;
 }
 
 static bool seqelem_set_lut_partial(void)
 {
-    g_lut = WF_PARTIAL_2IN9;
-    return true;
-}
-
-static bool seqelem_set_lut(void)
-{
-    epd_send_command(0x32);
-    epd_send_data_block(g_lut, 153);
-    epd_send_command(0x3f);
-    epd_send_data(g_lut[153]);
-    epd_send_command(0x03);
-    epd_send_data(g_lut[154]);
-    epd_send_command(0x04);
-    epd_send_data(g_lut[155]);
-    epd_send_data(g_lut[156]);
-    epd_send_data(g_lut[157]);
-    epd_send_command(0x2c);
-    epd_send_data(g_lut[158]);
-
+    epd_set_lut_by_host(WF_PARTIAL_2IN9);
     return true;
 }
 
@@ -441,11 +438,19 @@ static bool seqelem_turn_on_display_partial_async(void)
     return true;
 }
 
-static bool seqelem_sleep(void)
+static bool seqelem_sleep_1of2(void)
 {
-    epd_send_command(0x10);
-    tim_wait_start = timer_read32();
-    ms_wait = 100;
+    if (timer_elapsed32(tim_wait_start) < ms_wait){
+        return false;
+    }
+    return true;
+}
+
+static bool seqelem_sleep_2of2(void)
+{
+    if (timer_elapsed32(tim_wait_start) < ms_wait){
+        return false;
+    }
     return true;
 }
 
@@ -456,8 +461,8 @@ static bool seqelem_sleep(void)
 // Sequences
 
 BEGIN_SEQ(seq_init)
-    SEQELEM_FUNC_BV(seqelem_wait_init),
-    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+    SEQELEM_FUNC_BV(seqelem_wait_init_1of2),
+    SEQELEM_FUNC_BV(seqelem_wait_init_2of2),
     SEQELEM_FUNC_BV(seqelem_rst_1of3),
     SEQELEM_FUNC_BV(seqelem_rst_2of3),
     SEQELEM_FUNC_BV(seqelem_rst_3of3),
@@ -465,12 +470,11 @@ BEGIN_SEQ(seq_init)
     SEQELEM_FUNC_BV(seqelem_wait_until_idle),
     SEQELEM_FUNC_BV(seqelem_init),
     SEQELEM_FUNC_BV(seqelem_set_lut_20_30),
-    SEQELEM_FUNC_BV(seqelem_set_lut),
     SEQELEM_FUNC_BV(seqelem_clear),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_async),
     SEQELEM_FUNC_BV(seqelem_wait_until_idle),
-    SEQELEM_FUNC_BV(seqelem_sleep),
-    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+    SEQELEM_FUNC_BV(seqelem_sleep_1of2),
+    SEQELEM_FUNC_BV(seqelem_sleep_2of2),
 END_SEQ
 
 BEGIN_SEQ(seq_show_image)
@@ -481,12 +485,11 @@ BEGIN_SEQ(seq_show_image)
     SEQELEM_FUNC_BV(seqelem_wait_until_idle),
     SEQELEM_FUNC_BV(seqelem_init_fast),
     SEQELEM_FUNC_BV(seqelem_set_lut_full),
-    SEQELEM_FUNC_BV(seqelem_set_lut),
     SEQELEM_FUNC_BV(seqelem_send_image),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_async),
     SEQELEM_FUNC_BV(seqelem_wait_until_idle),
-    SEQELEM_FUNC_BV(seqelem_sleep),
-    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+    SEQELEM_FUNC_BV(seqelem_sleep_1of2),
+    SEQELEM_FUNC_BV(seqelem_sleep_2of2),
 END_SEQ
 
 BEGIN_SEQ(seq_show_image_partial)
@@ -494,14 +497,13 @@ BEGIN_SEQ(seq_show_image_partial)
     SEQELEM_FUNC_BV(seqelem_rst_2of3),
     SEQELEM_FUNC_BV(seqelem_rst_3of3),
     SEQELEM_FUNC_BV(seqelem_set_lut_partial),
-    SEQELEM_FUNC_BV(seqelem_set_lut),
     SEQELEM_FUNC_BV(seqelem_init_partial_async),
     SEQELEM_FUNC_BV(seqelem_wait_until_idle),
     SEQELEM_FUNC_BV(seqelem_send_image),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_partial_async),
     SEQELEM_FUNC_BV(seqelem_wait_until_idle),
-    SEQELEM_FUNC_BV(seqelem_sleep),
-    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+    SEQELEM_FUNC_BV(seqelem_sleep_1of2),
+    SEQELEM_FUNC_BV(seqelem_sleep_2of2),
 END_SEQ
 
 // Sequences
