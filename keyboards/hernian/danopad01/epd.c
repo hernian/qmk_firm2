@@ -1,8 +1,10 @@
 // Waveshare 12956
 // /296x128, 2.9inch E-Ink display module driver
 #include QMK_KEYBOARD_H
+#include <hardware/structs/systick.h>
 #include "spi_master.h"
 #include "epd.h"
+
 
 #define EPD_BUSY_PIN    GP10
 #define EPD_MOSI_PIN    SPI_MOSI_PIN
@@ -58,6 +60,7 @@ static const uint8_t WF_FULL[159] =
 0x22,	0x17,	0x41,	0xAE,	0x32,	0x38,							//EOPT VGH VSH1 VSH2 VSL VCOM
 };
 
+
 static const uint8_t WF_PARTIAL_2IN9[159] =
 {
 0x0,0x40,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
@@ -65,7 +68,7 @@ static const uint8_t WF_PARTIAL_2IN9[159] =
 0x40,0x40,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
 0x0,0x80,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
 0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
-0x0A,0x0,0x0,0x0,0x0,0x0,0x2,
+0x0A,0x0,0x0,0x0,0x0,0x0,0x1,
 0x1,0x0,0x0,0x0,0x0,0x0,0x0,
 0x1,0x0,0x0,0x0,0x0,0x0,0x0,
 0x0,0x0,0x0,0x0,0x0,0x0,0x0,
@@ -82,6 +85,10 @@ static const uint8_t WF_PARTIAL_2IN9[159] =
 };
 
 
+static const uint8_t* g_lut;
+static const uint8_t* g_image;
+
+
 static void epd_gpio_config(void)
 {
     // RP2040 CUP Clock: 125MHz, Waveshare e-paper SPI Clock: 20MHz
@@ -91,11 +98,17 @@ static void epd_gpio_config(void)
     gpio_set_pin_input(EPD_BUSY_PIN);
     gpio_set_pin_output(EPD_RST_PIN);
     gpio_set_pin_output(EPD_DC_PIN);
-}
 
+    gpio_write_pin_high(EPD_RST_PIN);
+    gpio_write_pin_high(EPD_DC_PIN);
+}
 
 static void epd_send_command(uint8_t cmd)
 {
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        dprintf("Send command in spite of Busy: %02x\n", cmd);
+    }
+
     gpio_write_pin_low(EPD_DC_PIN);
     spi_transmit(&cmd, 1);
 }
@@ -114,12 +127,13 @@ static void epd_send_data_block(const uint8_t* block, size_t len)
 
 static void epd_send_data_repeatedly(const uint8_t data, size_t count)
 {
-#if 0
-    const uint SIZE_TEMP_BUFF = 16;
+    enum dummy {
+        SIZE_TEMP_BUFF = 64
+    };
     uint count_temp_repeat = count / SIZE_TEMP_BUFF;
     uint count_temp_remain = count % SIZE_TEMP_BUFF;
     uint i;
-    uint8_t temp[SIZE_TEMP_BUFF];
+    static uint8_t temp[SIZE_TEMP_BUFF];
 
     memset(temp, data, SIZE_TEMP_BUFF);
 
@@ -130,22 +144,6 @@ static void epd_send_data_repeatedly(const uint8_t data, size_t count)
     if (count_temp_remain > 0){
         spi_transmit(temp, count_temp_remain);
     }
-#endif
-    uint i;
-    gpio_write_pin_high(EPD_DC_PIN);
-    for (i = 0; i < count; i++){
-        spi_transmit(&data, 1);
-    }
-}
-
-static void epd_reset(void)
-{
-    gpio_write_pin_high(EPD_RST_PIN);
-    wait_ms(10);
-    gpio_write_pin_low(EPD_RST_PIN);
-    wait_ms(2);
-    gpio_write_pin_high(EPD_RST_PIN);
-    wait_ms(10);
 }
 
 static void epd_set_windows(uint x_start, uint y_start, uint x_end, uint y_end)
@@ -169,72 +167,180 @@ static void epd_set_cursor(uint x_start, uint y_start)
     epd_send_data((uint8_t)(y_start >> 8));
 }
 
-static void epd_lut(const uint8_t* lut)
+///////////////////////////////////////////////////////////////
+// Control Sequencer Engine
+
+typedef enum cseq_type {
+    CSEQ_TYPE_END = 0,
+    CSEQ_TYPE_FUNC_BV,
+} cseq_type_t;
+
+typedef bool (*cseq_func_bv_t)(void);
+
+typedef union cseq_elem   cseq_elem_t;
+typedef struct cseq_elem_header {
+    cseq_type_t type;
+} cseq_elem_header_t;
+typedef struct cseq_elem_func_bv {
+    cseq_type_t type;
+    cseq_func_bv_t    func;
+} cseq_elem_func_bv_t;
+union cseq_elem {
+    cseq_elem_header_t  header;
+    cseq_elem_func_bv_t func_bv;
+};
+
+#define BEGIN_SEQ(NAME) const cseq_elem_t NAME[] = {
+#define END_SEQ {.header={.type=CSEQ_TYPE_END}}};
+
+#define SEQELEM_FUNC_BV(FUNC)  {.func_bv={.type=CSEQ_TYPE_FUNC_BV, .func=(FUNC)}}
+
+static cseq_func_bv_t       func_cur;
+static const cseq_elem_t*   seq_next;
+static const cseq_elem_t*   pelem_cur;
+
+
+static void cseq_engine_task(void)
 {
-    epd_send_command(0x32);
-    epd_send_data_block(lut, 153);
-    epd_read_busy();
+    if (pelem_cur == NULL){
+        if (seq_next == NULL){
+            return;
+        }
+        pelem_cur = seq_next;
+        seq_next = NULL;
+    }
+    if (func_cur != NULL){
+        if (func_cur() == false){
+            return;
+        }
+        func_cur = NULL;
+    }
+    switch (pelem_cur->header.type){
+        case CSEQ_TYPE_END:
+            pelem_cur = NULL;
+            return;
+        case CSEQ_TYPE_FUNC_BV:
+            {
+                const cseq_elem_func_bv_t* pefunc_bv = (const cseq_elem_func_bv_t*)pelem_cur;
+                func_cur = pefunc_bv->func;
+                break;
+            }
+    }
+    pelem_cur++;
 }
 
-static void epd_lut_by_host(const uint8_t* lut)
+static void cseq_start(const cseq_elem_t* seq)
 {
-    epd_lut(lut);
-    epd_send_command(0x3f);
-    epd_send_data(lut[153]);
-    epd_send_command(0x03); // gate voltage
-    epd_send_data(lut[154]);
-    epd_send_command(0x04); // source voltage
-    epd_send_data(lut[155]); // VSH
-    epd_send_data(lut[156]); // VSH2
-    epd_send_data(lut[157]); // VSL
-    epd_send_command(0x2c); // VCOM
-    epd_send_data(lut[158]);
+    seq_next = seq;
 }
 
-void epd_init(void)
+// Control Sequencer Engine
+///////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////
+// Elements of Sequence
+
+static uint32_t    tim_wait_start;
+static uint32_t    ms_wait;
+
+static bool seqelem_wait_timer_elapsed(void)
 {
-    epd_gpio_config();
-    epd_reset();
-    wait_ms(100);
+    if (timer_elapsed32(tim_wait_start) < ms_wait){
+        return false;
+    }
+    return true;
+}
 
-    epd_read_busy();
-    epd_send_command(0x12); // soft reset
-    epd_read_busy();
+static bool seqelem_wait_until_idle(void)
+{
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        return false;
+    }
+    return true;
+}
 
-    epd_send_command(0x01); // driver output control
+static bool seqelem_wait_init(void)
+{
+    tim_wait_start = timer_read32();
+    ms_wait = 1000;
+    return true;
+}
+
+static bool seqelem_rst_1of3(void)
+{
+    gpio_write_pin_low(EPD_RST_PIN);
+    tim_wait_start = timer_read32();
+    ms_wait = 10;
+    return true;
+}
+
+static bool seqelem_rst_2of3(void)
+{
+    if (timer_elapsed32(tim_wait_start) < ms_wait){
+        return false;
+    }
+    gpio_write_pin_high(EPD_RST_PIN);
+    tim_wait_start = timer_read32();
+    ms_wait = 10;
+    return true;
+}
+
+static bool seqelem_rst_3of3(void)
+{
+    if (timer_elapsed32(tim_wait_start) < ms_wait){
+        return false;
+    }
+    return true;
+}
+
+static bool seqelem_sw_reset_async(void)
+{
+    // soft reset
+    epd_send_command(0x12);
+    return true;
+}
+
+static bool seqelem_init_1of2(void)
+{
+    // Driver output control
+    epd_send_command(0x01);
     epd_send_data(0x27);
     epd_send_data(0x01);
     epd_send_data(0x00);
 
-    epd_send_command(0x11); // data entry mode
+    // Data entry mode
+    epd_send_command(0x11);
     epd_send_data(0x03);
 
     epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
 
-    epd_send_command(0x21); // display update control
+    // Display update control
+    epd_send_command(0x21);
     epd_send_data(0x00);
-    epd_send_data(0x00);
+    epd_send_data(0x80);
 
     epd_set_cursor(0, 0);
-
-    epd_lut_by_host(WS_20_30);
+    return true;
 }
 
-void epd_init_fast(void)
+static bool seqelem_init_2of2(void)
 {
-    epd_reset();
-    wait_ms(100);
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        return false;
+    }
+    return true;
+}
 
-    epd_read_busy();
-    epd_send_command(0x12); // soft reset
-    epd_read_busy();
-
-    epd_send_command(0x01); // Driver output control
+static bool seqelem_init_fast_1of2(void)
+{
+    // Driver output control
+    epd_send_command(0x01);
     epd_send_data(0x27);
     epd_send_data(0x01);
     epd_send_data(0x00);
 
-    epd_send_command(0x11); // data entry mode
+    // Data entry mode
+    epd_send_command(0x11);
     epd_send_data(0x03);
 
     epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
@@ -242,91 +348,86 @@ void epd_init_fast(void)
     epd_send_command(0x3c);
     epd_send_data(0x05);
 
+    // Display update control
     epd_send_command(0x21);
     epd_send_data(0x00);
     epd_send_data(0x80);
 
     epd_set_cursor(0, 0);
-    epd_read_busy();
-
-    epd_lut_by_host(WF_FULL);
+    return true;
 }
 
-void epd_read_busy(void)
+static bool seqelem_init_fast_2of2(void)
 {
-    while (gpio_read_pin(EPD_BUSY_PIN))
-    {
-        wait_ms(50);
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        return false;
     }
-    wait_ms(50);
+    return true;
 }
 
-void epd_turn_on_display(void)
+static bool seqelem_set_lut_20_30(void)
 {
-    epd_send_command(0x22); // Display Update Control
-    epd_send_data(0xC7);
-    epd_send_command(0x20); // Activate Display Update Sequence
-//    epd_read_busy();
+    g_lut = WS_20_30;
+    return true;
 }
 
-void epd_turn_on_display_partial(void)
+static bool seqelem_set_lut_full(void)
 {
-    epd_send_command(0x22); // Display Update Control
-    epd_send_data(0x0f);
-    epd_send_command(0x20); // Activate Display Update Sequence
-    epd_read_busy();
+    g_lut = WF_FULL;
+    return true;
 }
 
-void epd_clear(void)
+static bool seqelem_set_lut_partial(void)
+{
+    g_lut = WF_PARTIAL_2IN9;
+    return true;
+}
+
+static bool seqelem_set_lut_1of2(void)
+{
+    epd_send_command(0x32);
+    epd_send_data_block(g_lut, 153);
+    return true;
+}
+
+static bool seqelem_set_lut_2of2(void)
+{
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        return false;
+    }
+
+    epd_send_command(0x3f);
+    epd_send_data(g_lut[153]);
+    epd_send_command(0x03);
+    epd_send_data(g_lut[154]);
+    epd_send_command(0x04);
+    epd_send_data(g_lut[155]);
+    epd_send_data(g_lut[156]);
+    epd_send_data(g_lut[157]);
+    epd_send_command(0x2c);
+    epd_send_data(g_lut[158]);
+
+    return true;
+}
+
+static bool seqelem_clear(void)
 {
     epd_send_command(0x24);
     epd_send_data_repeatedly(0xff, COUNT_IMAGE_BYTES);
-
     epd_send_command(0x26);
     epd_send_data_repeatedly(0xff, COUNT_IMAGE_BYTES);
+    return true;
 }
 
-void epd_clean_screen(void)
+static bool seqelem_send_image(void)
 {
     epd_send_command(0x24);
-    epd_send_data_repeatedly(0x00, COUNT_IMAGE_BYTES);
-
-    epd_turn_on_display();
-
-    epd_send_command(0x24);
-    epd_send_data_repeatedly(0xff, COUNT_IMAGE_BYTES);
-
-    epd_turn_on_display();
+    epd_send_data_block(g_image, COUNT_IMAGE_BYTES);
+    return true;
 }
 
-void epd_display(const uint8_t* image)
+static bool seqelem_init_partial_1of2(void)
 {
-    epd_send_command(0x24);
-    epd_send_data_block(image, COUNT_IMAGE_BYTES);
-
-    epd_turn_on_display();
-}
-
-void epd_display_base(const uint8_t* image)
-{
-    epd_send_command(0x24);
-    epd_send_data_block(image, COUNT_IMAGE_BYTES);
-
-    epd_send_command(0x26);
-    epd_send_data_block(image, COUNT_IMAGE_BYTES);
-
-    epd_turn_on_display();
-}
-
-void epd_display_partial(const uint8_t* image)
-{
-    // reset
-    gpio_write_pin_low(EPD_RST_PIN);
-    wait_ms(1);
-    gpio_write_pin_high(EPD_RST_PIN);
-    wait_ms(2);
-
-    epd_lut(WF_PARTIAL_2IN9);
     epd_send_command(0x37);
     epd_send_data(0x00);
     epd_send_data(0x00);
@@ -339,236 +440,132 @@ void epd_display_partial(const uint8_t* image)
     epd_send_data(0x00);
     epd_send_data(0x00);
 
-    epd_send_command(0x3c); // BorderWaveform
+    epd_send_command(0x3c);
     epd_send_data(0x80);
 
     epd_send_command(0x22);
     epd_send_data(0xc0);
     epd_send_command(0x20);
-    epd_read_busy();
-
-    epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-    epd_set_cursor(0, 0);
-
-    epd_send_command(0x24);
-    epd_send_data_block(image, COUNT_IMAGE_BYTES);
-
-    epd_turn_on_display_partial();
-}
-
-void epd_sleep(void)
-{
-    epd_send_command(0x10); // enter deep sleep
-    epd_send_data(0x01);
-    wait_ms(100);
-}
-
-
-static const uint8_t* g_image = NULL;
-static int g_state = 0;
-static uint g_time_mark;
-static uint g_time_delay;
-
-
-static bool epd_every_sec(uint32_t* tim_pre)
-{
-    uint32_t tim_cur = timer_read();
-
-    if (tim_cur - *tim_pre < 1000){
-        return false;
-    }
-    *tim_pre = tim_cur;
     return true;
 }
 
-static void epd_delay_async(uint delay)
+static bool seqelem_init_partial_2of2(void)
 {
-    g_time_delay = delay;
-    g_time_mark = timer_read();
-}
-
-static bool epd_delay_wait(void)
-{
-    return timer_elapsed(g_time_mark) >= g_time_delay;
-}
-
-bool epd_busy_wait(void)
-{
-    return !gpio_read_pin(EPD_BUSY_PIN);
-}
-
-void epd_init_req(void)
-{
-    g_state = 100;
-}
-
-void epd_init_1_async(void)
-{
-    dprint("[epd_init_1_async]start\n");
-    epd_gpio_config();
-    epd_reset();
-    epd_delay_async(100);
-}
-
-bool epd_init_1_wait(void)
-{
-    return epd_delay_wait();
-}
-
-bool epd_init_2_wait(void)
-{
-    static uint32_t tim_pre;
-    uint busy = gpio_read_pin(EPD_BUSY_PIN);
-    if (epd_every_sec(&tim_pre)){
-        dprintf("[epd_init_2_wait]busy %u\n", busy);
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        return false;
     }
-    return !busy;
-}
-
-void epd_init_3_async(void)
-{
-    dprint("[epd_init_3_async]start\n");
-    epd_send_command(0x12); // soft reset
-}
-
-bool epd_init_3_wait(void)
-{
-    static uint32_t tim_pre;
-    uint busy = gpio_read_pin(EPD_BUSY_PIN);
-    if (epd_every_sec(&tim_pre)){
-        dprintf("[epd_init_3_wait]busy %u\n", busy);
-    }
-    return !busy;
-}
-
-void epd_init_4(void)
-{
-    dprint("[epd_init_4]start\n");
-    epd_send_command(0x01); // driver output control
-    epd_send_data(0x27);
-    epd_send_data(0x01);
-    epd_send_data(0x00);
-
-    epd_send_command(0x11); // data entry mode
-    epd_send_data(0x03);
 
     epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-
-    epd_send_command(0x21); // display update control
-    epd_send_data(0x00);
-    epd_send_data(0x00);
-
     epd_set_cursor(0, 0);
-
-    epd_lut_by_host(WS_20_30);
-
-    dprint("[epd_init_4]end\n");
+    return true;
 }
 
-static void epd_set_image(const uint8_t* image)
+static bool seqelem_turn_on_display_async(void)
 {
-    epd_send_command(0x24);
-    epd_send_data_block(image, COUNT_IMAGE_BYTES);
+    epd_send_command(0x22);
+    epd_send_data(0xc7);
+    epd_send_command(0x20);
+    return true;
 }
 
-static void epd_turn_on_display_async(void)
+static bool seqelem_turn_on_display_partial_async(void)
 {
-    epd_send_command(0x22); // Display Update Control
-    epd_send_data(0xC7);
-    epd_send_command(0x20); // Activate Display Update Sequence
+    epd_send_command(0x22);
+    epd_send_data(0x0f);
+    epd_send_command(0x20);
+    return true;
 }
 
-static bool epd_turn_on_display_wait(void)
+static bool seqelem_sleep(void)
 {
-    return epd_busy_wait();
+    epd_send_command(0x10);
+    tim_wait_start = timer_read32();
+    ms_wait = 100;
+    return true;
 }
 
-static void epd_sleep_async(void)
-{
-    epd_send_command(0x10); // enter deep sleep
-    epd_send_data(0x01);
-    epd_delay_async(100);
-}
+// Elements of Sequence
+////////////////////////////////////////////////////
 
-static bool epd_sleep_wait(void)
-{
-    return epd_delay_wait();
-}
+////////////////////////////////////////////////////
+// Sequences
 
-void epd_display_image_req(const uint8_t* image)
+BEGIN_SEQ(seq_init)
+    SEQELEM_FUNC_BV(seqelem_wait_init),
+    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+    SEQELEM_FUNC_BV(seqelem_rst_1of3),
+    SEQELEM_FUNC_BV(seqelem_rst_2of3),
+    SEQELEM_FUNC_BV(seqelem_rst_3of3),
+    SEQELEM_FUNC_BV(seqelem_sw_reset_async),
+    SEQELEM_FUNC_BV(seqelem_wait_until_idle),
+    SEQELEM_FUNC_BV(seqelem_init_1of2),
+    SEQELEM_FUNC_BV(seqelem_init_2of2),
+    SEQELEM_FUNC_BV(seqelem_set_lut_20_30),
+    SEQELEM_FUNC_BV(seqelem_set_lut_1of2),
+    SEQELEM_FUNC_BV(seqelem_set_lut_2of2),
+    SEQELEM_FUNC_BV(seqelem_clear),
+    SEQELEM_FUNC_BV(seqelem_turn_on_display_async),
+    SEQELEM_FUNC_BV(seqelem_wait_until_idle),
+    SEQELEM_FUNC_BV(seqelem_sleep),
+    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+END_SEQ
+
+BEGIN_SEQ(seq_show_image)
+    SEQELEM_FUNC_BV(seqelem_rst_1of3),
+    SEQELEM_FUNC_BV(seqelem_rst_2of3),
+    SEQELEM_FUNC_BV(seqelem_rst_3of3),
+    SEQELEM_FUNC_BV(seqelem_sw_reset_async),
+    SEQELEM_FUNC_BV(seqelem_wait_until_idle),
+    SEQELEM_FUNC_BV(seqelem_init_fast_1of2),
+    SEQELEM_FUNC_BV(seqelem_init_fast_2of2),
+    SEQELEM_FUNC_BV(seqelem_set_lut_full),
+    SEQELEM_FUNC_BV(seqelem_set_lut_1of2),
+    SEQELEM_FUNC_BV(seqelem_set_lut_2of2),
+    SEQELEM_FUNC_BV(seqelem_send_image),
+    SEQELEM_FUNC_BV(seqelem_turn_on_display_async),
+    SEQELEM_FUNC_BV(seqelem_wait_until_idle),
+    SEQELEM_FUNC_BV(seqelem_sleep),
+    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+END_SEQ
+
+BEGIN_SEQ(seq_show_image_partial)
+    SEQELEM_FUNC_BV(seqelem_rst_1of3),
+    SEQELEM_FUNC_BV(seqelem_rst_2of3),
+    SEQELEM_FUNC_BV(seqelem_rst_3of3),
+    SEQELEM_FUNC_BV(seqelem_set_lut_partial),
+    SEQELEM_FUNC_BV(seqelem_set_lut_1of2),
+    SEQELEM_FUNC_BV(seqelem_set_lut_2of2),
+    SEQELEM_FUNC_BV(seqelem_init_partial_1of2),
+    SEQELEM_FUNC_BV(seqelem_init_partial_2of2),
+    SEQELEM_FUNC_BV(seqelem_send_image),
+    SEQELEM_FUNC_BV(seqelem_turn_on_display_partial_async),
+    SEQELEM_FUNC_BV(seqelem_wait_until_idle),
+    SEQELEM_FUNC_BV(seqelem_sleep),
+    SEQELEM_FUNC_BV(seqelem_wait_timer_elapsed),
+END_SEQ
+
+// Sequences
+////////////////////////////////////////////////////
+
+void epd_display_image(const uint8_t* image)
 {
     g_image = image;
+    cseq_start(seq_show_image);
 }
 
+void epd_display_image_partial(const uint8_t* image)
+{
+    g_image = image;
+    cseq_start(seq_show_image_partial);
+}
+
+void epd_task_init(void)
+{
+    epd_gpio_config();
+    cseq_start(seq_init);
+}
 
 void epd_task(void)
 {
-    switch (g_state) {
-        case 0:
-            if (g_image == NULL){
-                break;
-            }
-            dprint("[epd_task] changing image start\n");
-            epd_init_fast();
-            g_state++;
-            break;
-        case 1:
-            dprint("[epd_task] changing image #1\n");
-            epd_set_image(g_image);
-            g_image = NULL;
-            g_state++;
-            break;
-        case 2:
-            dprint("[epd_task] changing image #2\n");
-            epd_turn_on_display_async();
-            g_state++;
-            break;
-        case 3:
-            if (!epd_turn_on_display_wait()){
-                break;
-            }
-            dprint("[epd_task] changing image #3\n");
-            g_state++;
-            break;
-        case 4:
-            dprint("[epd_task] changing image #4\n");
-            epd_sleep_async();
-            g_state++;
-            break;
-        case 5:
-            if (!epd_sleep_wait()){
-                break;
-            }
-            dprint("[epd_task] changing image end\n");
-            g_state = 0;
-            break;
-        case 100:
-            dprint("[epd_task] 100\n");
-            epd_init_1_async();
-            g_state++;
-            break;
-        case 101:
-            if (!epd_init_1_wait()){
-                break;
-            }
-            dprint("[epd_task] 101\n");
-            g_state++;
-        case 102:
-            // epd_init_2_async()は無い
-            if (!epd_init_2_wait()){
-                break;
-            }
-            dprint("[epd_task] 102\n");
-            epd_init_3_async();
-            g_state++;
-            break;
-        case 103:
-            if (!epd_init_3_wait()){
-                break;
-            }
-            dprint("[epd_task] 103\n");
-            epd_init_4();
-            g_state = 0;
-            break;
-    }
+    cseq_engine_task();
 }
