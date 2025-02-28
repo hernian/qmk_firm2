@@ -2,8 +2,9 @@
 #include <print.h>
 #include "ch.h"
 #include "epd.h"
+#include "generated/img_navi_layer.h"
+#include "generated/img_tenkey_layer.h"
 
-extern const uint8_t Image128x296[];
 
 static uint8_t g_myBitmap[COUNT_IMAGE_BYTES];
 
@@ -92,17 +93,16 @@ void housekeeping_task_kb(void)
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record)
 {
-    (void)Image128x296;
     if (record->event.pressed){
         dprintf("key down: %04X\n", keycode);
         if (keycode == 0x14){
-            epd_display_image_partial(Image128x296);
+            epd_display_image(img_tenkey_layer);
         }
     }
     else{
         if (keycode == 0x14){
             init_ichimatsu_bitmap();
-            epd_display_image(g_myBitmap);
+            epd_display_image(img_navi_layer);
         }
     }
 
