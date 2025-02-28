@@ -87,7 +87,6 @@ static const uint8_t WF_PARTIAL_2IN9[159] =
 
 static const uint8_t* g_image;
 
-
 static void epd_gpio_config(void)
 {
     // RP2040 CUP Clock: 125MHz, Waveshare e-paper SPI Clock: 20MHz
@@ -329,7 +328,9 @@ static bool seqelem_init(void)
 
     // Display update control
     epd_send_command(0x21);
-    epd_send_data(0x00);
+    // epd_send_data(0x00);
+    // epd_send_data(0x80);
+    epd_send_data(0x40); // partial_ex01 による実験
     epd_send_data(0x80);
 
     return true;
@@ -353,7 +354,9 @@ static bool seqelem_init_fast(void)
 
     // Display update control
     epd_send_command(0x21);
-    epd_send_data(0x00);
+    //epd_send_data(0x00);
+    //epd_send_data(0x80);
+    epd_send_data(0x40); // partial_ex01 による実験
     epd_send_data(0x80);
 
     return true;
@@ -433,7 +436,8 @@ static bool seqelem_turn_on_display_async(void)
 static bool seqelem_turn_on_display_partial_async(void)
 {
     epd_send_command(0x22);
-    epd_send_data(0x0f);
+    // epd_send_data(0x0f);
+    epd_send_data(0xcf);    // partial_ex01 パーシャルアップデート対応の調査
     epd_send_command(0x20);
     return true;
 }

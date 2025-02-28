@@ -1,4 +1,4 @@
 SPI_DRIVER_REQUIRED = yes
-SRC += epd.c image1.c
+SRC += epd_2in9_V2.c
 SRC += generated/img_navi_layer.c
 SRC += generated/img_tenkey_layer.c
