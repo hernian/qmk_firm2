@@ -20,6 +20,56 @@ const uint32_t HW_RESET_MS_HIGH_POST = 10;
 const uint32_t DEEP_SLEEP_MS_DELAY = 100;
 const uint32_t ENTER_DEEP_SLEEP_AFTER_MS = 3000;
 
+
+// waveform full refresh
+static uint8_t WF_FULL_1IN54[159] =
+{
+    0x80,	0x48,	0x40,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x40,	0x48,	0x80,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x80,	0x48,	0x40,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x40,	0x48,	0x80,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0xA,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x8,	0x1,	0x0,	0x8,	0x1,	0x0,	0x2,
+    0xA,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x0,	0x0,	0x0,	0x0,	0x0,	0x0,	0x0,
+    0x22,	0x22,	0x22,	0x22,	0x22,	0x22,	0x0,	0x0,	0x0,
+    0x22,	0x17,	0x41,	0x0,	0x32,	0x20
+};
+
+// waveform partial refresh(fast)
+static uint8_t WF_PARTIAL_1IN54_0[159] =
+{
+0x0,0x40,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x80,0x80,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x40,0x40,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x80,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0xF,0x0,0x0,0x0,0x0,0x0,0x0,
+0x1,0x1,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x22,0x22,0x22,0x22,0x22,0x22,0x0,0x0,0x0,
+0x02,0x17,0x41,0xB0,0x32,0x28
+};
+
+
 inline uint low_byte(uint value)
 {
     return value & 0xff;
@@ -71,6 +121,7 @@ static void epd_send_data_block(const uint8_t* block, size_t len)
     spi_transmit(block, len);
 }
 
+#if 0
 static void epd_send_data_repeatedly(const uint8_t data, size_t count)
 {
     enum dummy {
@@ -90,6 +141,23 @@ static void epd_send_data_repeatedly(const uint8_t data, size_t count)
     if (count_temp_remain > 0){
         spi_transmit(temp, count_temp_remain);
     }
+}
+#endif
+
+static void epd_set_lut(const uint8_t* lut)
+{
+    epd_send_command(0x32);
+    epd_send_data_block(lut, 153);
+    epd_send_command(0x3f);
+    epd_send_data(lut[153]);
+    epd_send_command(0x03);
+    epd_send_data(lut[154]);
+    epd_send_command(0x04);
+    epd_send_data(lut[155]);
+    epd_send_data(lut[156]);
+    epd_send_data(lut[157]);
+    epd_send_command(0x2c);
+    epd_send_data(lut[158]);
 }
 
 static void epd_set_windows(uint x_start, uint y_start, uint x_end, uint y_end)
@@ -343,26 +411,85 @@ static bool seqelem_init_async(void)
 
     // Select border waveform for VBD
     epd_send_command(0x3c);
-    epd_send_data(0x05);
+    epd_send_data(0x01);
 
     // Temperature Sensor Selection
     epd_send_command(0x18);
     epd_send_data(0x80); // Internal temperature sensor
+
+    epd_send_command(0x22);
+    epd_send_data(0xb1);
+    epd_send_command(0x20);
     return true;
 }
 
 static bool seqelem_init_wait(void)
 {
+    if (gpio_read_pin(EPD_BUSY_PIN)){
+        return false;
+    }
     return true;
 }
 
-static bool seqelem_init_partial_async(void)
+static bool seqelem_set_ult_full(void)
 {
+    epd_set_lut(WF_FULL_1IN54);
     return true;
 }
 
-static bool seqelem_init_partial_wait(void)
+static bool seqelem_set_ult_partial(void)
 {
+    epd_set_lut(WF_PARTIAL_1IN54_0);
+    return true;
+}
+
+static bool seqelem_prepare_partial(void)
+{
+    epd_send_command(0x37);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x40);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+
+    epd_send_command(0x3c);
+    epd_send_data(0x80);
+
+    //epd_send_command(0x22);
+    //epd_send_data(0xc0);
+    //epd_send_command(0x20);
+
+    return true;
+}
+
+#if 0
+static bool seqelem_clear(void)
+{
+    epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
+    epd_set_cursor(0, 0);
+
+    epd_send_command(0x24);
+    epd_send_data_repeatedly(0xff, COUNT_BYTES_IN_IMAGE);
+    epd_send_command(0x26);
+    epd_send_data_repeatedly(0xff, COUNT_BYTES_IN_IMAGE);
+    return true;
+}
+#endif
+
+static bool seqelem_send_image_base(void)
+{
+    epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
+    epd_set_cursor(0, 0);
+
+    epd_send_command(0x24);
+    epd_send_data_block(image, COUNT_BYTES_IN_IMAGE);
+    epd_send_command(0x26);
+    epd_send_data_block(image, COUNT_BYTES_IN_IMAGE);
     return true;
 }
 
@@ -373,26 +500,6 @@ static bool seqelem_send_image(void)
 
     epd_send_command(0x24);
     epd_send_data_block(image, COUNT_BYTES_IN_IMAGE);
-    return true;
-}
-
-static bool seqelem_send_image_back(void)
-{
-    epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-    epd_set_cursor(0, 0);
-
-    epd_send_command(0x26);
-    epd_send_data_block(image, COUNT_BYTES_IN_IMAGE);
-    return true;
-}
-
-static bool seqelem_clear_back(void)
-{
-    epd_set_windows(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-    epd_set_cursor(0, 0);
-
-    epd_send_command(0x26);
-    epd_send_data_repeatedly(0xff, COUNT_BYTES_IN_IMAGE);
     return true;
 }
 
@@ -418,7 +525,8 @@ static bool seqelem_turn_on_display_partial_async(void)
 {
     tim_start_turn_on_display = timer_read32();
     epd_send_command(0x22);
-    epd_send_data(0xff);
+    //epd_send_data(0xff);
+    epd_send_data(0xcf);
     epd_send_command(0x20);
     return true;
 }
@@ -467,23 +575,13 @@ BEGIN_SEQ(seq_init)
     SEQELEM_FUNC_BV(seqelem_sw_reset_wait),
     SEQELEM_FUNC_BV(seqelem_init_async),
     SEQELEM_FUNC_BV(seqelem_init_wait),
-    SEQELEM_FUNC_BV(seqelem_send_image),
-    SEQELEM_FUNC_BV(seqelem_clear_back),
+    SEQELEM_FUNC_BV(seqelem_set_ult_full),
+    SEQELEM_FUNC_BV(seqelem_send_image_base),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_async),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_wait),
-    SEQELEM_FUNC_BV(seqelem_send_image_back),
+    SEQELEM_FUNC_BV(seqelem_set_ult_partial),
+    SEQELEM_FUNC_BV(seqelem_prepare_partial),
     SEQELEM_DPRINT("seq_init end\n"),
-END_SEQ
-
-BEGIN_SEQ(seq_show_image)
-    SEQELEM_DPRINT("seq_show_image start\n"),
-    SEQELEM_FUNC_BV(seqelem_hw_reset_async),
-    SEQELEM_FUNC_BV(seqelem_hw_reset_wait),
-    SEQELEM_FUNC_BV(seqelem_send_image),
-    SEQELEM_FUNC_BV(seqelem_turn_on_display_async),
-    SEQELEM_FUNC_BV(seqelem_turn_on_display_wait),
-    SEQELEM_FUNC_BV(seqelem_send_image_back),
-    SEQELEM_DPRINT("seq_show_image end\n"),
 END_SEQ
 
 BEGIN_SEQ(seq_show_image_partial)
@@ -493,7 +591,6 @@ BEGIN_SEQ(seq_show_image_partial)
     SEQELEM_FUNC_BV(seqelem_send_image),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_partial_async),
     SEQELEM_FUNC_BV(seqelem_turn_on_display_partial_wait),
-    SEQELEM_FUNC_BV(seqelem_send_image_back),
     SEQELEM_DPRINT("seq_show_image_partial end\n"),
 END_SEQ
 
@@ -516,12 +613,6 @@ typedef enum {
 static idle_timer_phase_t idle_timer_phase = IDLE_TIMER_PHASE_FREE;
 static uint32_t tim_idle_start;
 
-
-void epd_display_image(const uint8_t* image)
-{
-    idle_timer_phase = IDLE_TIMER_PHASE_FREE;
-    cseq_start(seq_show_image, image);
-}
 
 void epd_display_image_partial(const uint8_t* image)
 {
@@ -563,12 +654,3 @@ void epd_task(void)
     }
 }
 
-// 参照していないstaticな関数がエラーになるので、ここで参照しておく
-void dummy(void)
-{
-//    cseq_engine_task()
-    seqelem_init_partial_async();
-    seqelem_init_partial_wait();
-    seqelem_deep_sleep_async();
-    seqelem_deep_sleep_wait();
-}
